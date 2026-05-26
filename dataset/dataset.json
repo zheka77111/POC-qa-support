@@ -1,0 +1,304 @@
+[
+    {
+        "ticket_id": "TICKET-C001",
+        "user_text": "Третий день не могу войти в аккаунт, поддержка молчит.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C002",
+        "user_text": "Сервис постоянно падает, работать невозможно, это недопустимо.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C003",
+        "user_text": "С меня списали деньги дважды, а ответа от вас нет уже неделю.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C004",
+        "user_text": "Каждый раз при оплате ошибка, вы вообще тестируете систему?",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C005",
+        "user_text": "Обещали решить проблему вчера, но ничего не изменилось.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C006",
+        "user_text": "После обновления все стало только хуже, половина функций не работает.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C007",
+        "user_text": "Почему мой тикет закрыли без решения? Это возмутительно.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C008",
+        "user_text": "Я устал писать в поддержку, никто не помогает.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C009",
+        "user_text": "Ваш бот отвечает не по теме, а оператор недоступен.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C010",
+        "user_text": "Сроки решения постоянно переносятся, это уже просто издевательство.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C011",
+        "user_text": "Интерфейс зависает при каждом действии, пользоваться сервисом невозможно.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C012",
+        "user_text": "Почему у меня пропали данные из отчета? Это критическая ошибка.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C013",
+        "user_text": "Вы списываете абонентскую плату, хотя подписка отключена.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C014",
+        "user_text": "Никто не предупреждал о технических работах, я потерял время и деньги.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C015",
+        "user_text": "Поддержка отвечает шаблонами и не решает мой вопрос.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C016",
+        "user_text": "Сервис тормозит уже месяц, за что я плачу?",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C017",
+        "user_text": "Ошибка 500 при каждом входе, и никакой реакции с вашей стороны.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C018",
+        "user_text": "Я отправил документы на проверку, но статус не меняется 10 дней.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C019",
+        "user_text": "Ваше приложение вылетает сразу после запуска, это неприемлемо.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C020",
+        "user_text": "Мне обещали перезвонить, но никто так и не связался.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C021",
+        "user_text": "Платеж прошел, а услуга не активировалась. Почему я должен ждать?",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C022",
+        "user_text": "После смены тарифа условия стали хуже, хотя обещали обратное.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C023",
+        "user_text": "Я уже четвертый раз объясняю проблему разным операторам.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C024",
+        "user_text": "Система неверно считает баланс, это серьезное нарушение.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+    {
+        "ticket_id": "TICKET-C025",
+        "user_text": "Невозможно скачать акт, сроки горят, а техподдержка не реагирует.",
+        "expected": "complaint_escalation",
+        "answer": "None"
+    },
+
+
+    {
+        "ticket_id": "TICKET-Q001",
+        "user_text": "Как восстановить пароль от личного кабинета?",
+        "expected": "answer",
+        "answer": "Нажмите «Забыли пароль» на странице входа, введите email и перейдите по ссылке из письма для установки нового пароля."
+    },
+    {
+        "ticket_id": "TICKET-Q002",
+        "user_text": "Как изменить способ оплаты подписки?",
+        "expected": "answer",
+        "answer": "Откройте «Настройки -> Оплата», добавьте новую карту и выберите ее как основной способ оплаты."
+    },
+    {
+        "ticket_id": "TICKET-Q003",
+        "user_text": "Где скачать закрывающие документы за прошлый месяц?",
+        "expected": "answer",
+        "answer": "Перейдите в «Финансы -> Документы», выберите нужный месяц и нажмите «Скачать акт» или «Счет-фактуру»."
+    },
+    {
+        "ticket_id": "TICKET-Q004",
+        "user_text": "Как подключить двухфакторную аутентификацию?",
+        "expected": "answer",
+        "answer": "В «Безопасность» включите 2FA, отсканируйте QR-код в приложении-аутентификаторе и подтвердите одноразовым кодом."
+    },
+    {
+        "ticket_id": "TICKET-Q005",
+        "user_text": "Как добавить нового пользователя в рабочее пространство?",
+        "expected": "answer",
+        "answer": "Откройте «Команда -> Пригласить», укажите email сотрудника, назначьте роль и отправьте приглашение."
+    },
+    {
+        "ticket_id": "TICKET-Q006",
+        "user_text": "Можно ли сменить тариф в середине месяца?",
+        "expected": "answer",
+        "answer": "Да, смена тарифа доступна в любой день. Стоимость пересчитается пропорционально оставшемуся периоду."
+    },
+    {
+        "ticket_id": "TICKET-Q007",
+        "user_text": "Как экспортировать отчет в Excel?",
+        "expected": "answer",
+        "answer": "В разделе «Отчеты» откройте нужный отчет и нажмите «Экспорт -> XLSX»."
+    },
+    {
+        "ticket_id": "TICKET-Q008",
+        "user_text": "Где посмотреть историю входов в аккаунт?",
+        "expected": "answer",
+        "answer": "История входов доступна в «Безопасность -> Активность сессий» с датой, IP и устройством."
+    },
+    {
+        "ticket_id": "TICKET-Q009",
+        "user_text": "Как отвязать старую банковскую карту?",
+        "expected": "answer",
+        "answer": "В «Настройки -> Оплата» выберите карту и нажмите «Удалить». Убедитесь, что есть другой активный способ оплаты."
+    },
+    {
+        "ticket_id": "TICKET-Q010",
+        "user_text": "Как изменить email для уведомлений?",
+        "expected": "answer",
+        "answer": "Откройте «Профиль -> Контакты», укажите новый email и подтвердите его по ссылке из письма."
+    },
+    {
+        "ticket_id": "TICKET-Q011",
+        "user_text": "Что делать, если не приходит письмо подтверждения?",
+        "expected": "answer",
+        "answer": "Проверьте папку «Спам», корректность адреса и повторите отправку через 5 минут. Если не помогло, обратитесь в поддержку."
+    },
+    {
+        "ticket_id": "TICKET-Q012",
+        "user_text": "Как настроить уведомления только по важным событиям?",
+        "expected": "answer",
+        "answer": "В «Настройки -> Уведомления» отключите лишние категории и оставьте включенными только критичные события."
+    },
+    {
+        "ticket_id": "TICKET-Q013",
+        "user_text": "Можно ли временно заморозить подписку?",
+        "expected": "answer",
+        "answer": "Да, в разделе «Тариф» доступна опция «Пауза подписки» на срок до 30 дней."
+    },
+    {
+        "ticket_id": "TICKET-Q014",
+        "user_text": "Как посмотреть лимиты по API?",
+        "expected": "answer",
+        "answer": "Лимиты и текущий расход доступны в «Разработчикам -> API -> Квоты»."
+    },
+    {
+        "ticket_id": "TICKET-Q015",
+        "user_text": "Как сгенерировать новый API-ключ?",
+        "expected": "answer",
+        "answer": "Перейдите в «Разработчикам -> API-ключи», нажмите «Создать ключ» и сохраните его в безопасном месте."
+    },
+    {
+        "ticket_id": "TICKET-Q016",
+        "user_text": "Как удалить аккаунт компании?",
+        "expected": "answer",
+        "answer": "Удаление доступно владельцу в «Настройки организации -> Удалить организацию» после подтверждения паролем."
+    },
+    {
+        "ticket_id": "TICKET-Q017",
+        "user_text": "Где изменить язык интерфейса?",
+        "expected": "answer",
+        "answer": "Откройте «Профиль -> Язык» и выберите нужный язык из списка."
+    },
+    {
+        "ticket_id": "TICKET-Q018",
+        "user_text": "Как включить еженедельную отправку отчета на почту?",
+        "expected": "answer",
+        "answer": "В отчете нажмите «Подписка», выберите период «Раз в неделю» и укажите получателей."
+    },
+    {
+        "ticket_id": "TICKET-Q019",
+        "user_text": "Как отменить уже запланированную рассылку?",
+        "expected": "answer",
+        "answer": "Зайдите в «Коммуникации -> Рассылки -> Запланированные», выберите кампанию и нажмите «Отменить»."
+    },
+    {
+        "ticket_id": "TICKET-Q020",
+        "user_text": "Есть ли интеграция с Telegram?",
+        "expected": "answer",
+        "answer": "Да, в «Интеграции» выберите Telegram, подключите бота и выполните шаги авторизации."
+    },
+    {
+        "ticket_id": "TICKET-Q021",
+        "user_text": "Как добавить второй домен для отправки писем?",
+        "expected": "answer",
+        "answer": "В «Почтовые настройки -> Домены» нажмите «Добавить домен» и настройте DNS-записи SPF, DKIM и DMARC."
+    },
+    {
+        "ticket_id": "TICKET-Q022",
+        "user_text": "Как вернуть доступ сотруднику после увольнения по ошибке?",
+        "expected": "answer",
+        "answer": "В «Команда -> Архив пользователей» выберите сотрудника и нажмите «Восстановить доступ»."
+    },
+    {
+        "ticket_id": "TICKET-Q023",
+        "user_text": "Где посмотреть статус инцидентов сервиса?",
+        "expected": "answer",
+        "answer": "Актуальный статус доступен на странице «Статус сервиса» в футере личного кабинета."
+    },
+    {
+        "ticket_id": "TICKET-Q024",
+        "user_text": "Как включить темную тему интерфейса?",
+        "expected": "answer",
+        "answer": "Перейдите в «Профиль -> Оформление» и выберите режим «Темная тема»."
+    },
+    {
+        "ticket_id": "TICKET-Q025",
+        "user_text": "Как ограничить доступ менеджеров только к своим клиентам?",
+        "expected": "answer",
+        "answer": "Создайте роль с ограничениями в «Права доступа» и включите фильтр «Только закрепленные клиенты»."
+    }
+]
