@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 from langgraph.graph import END, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from support_agent.config import Settings
 from support_agent.knowledge_base import HybridChromaKnowledgeBase
 from support_agent.llm import build_llm_client
-from support_agent.logging_utils import append_event
 from support_agent.nodes.classify import classify_request, receive_request
 from support_agent.nodes.errors import handle_error
 from support_agent.nodes.escalation import (
@@ -28,26 +29,29 @@ from support_agent.nodes.retrieval import prepare_search_context, search_knowled
 from support_agent.state import SupportTicketState
 
 
-def build_support_graph(settings: Settings, logger: logging.Logger):
-    llm_client = build_llm_client(settings)
-    dataset_dir = Path(__file__).resolve().parent.parent / "dataset"
-    kb_files = sorted(dataset_dir.glob("kb_doc_*.md"))
-    kb = HybridChromaKnowledgeBase.from_markdown_files(kb_files, settings=settings)
+def build_support_graph(
+    settings: Settings,
+    logger: logging.Logger,
+    checkpointer: Any | None = None,
+) -> CompiledStateGraph:
+    llm_client_gigachat = build_llm_client(settings)
+    kb_files = settings.files
+    kb = HybridChromaKnowledgeBase.from_markdown_files([Path(f) for f in kb_files], settings=settings)
 
     graph = StateGraph(SupportTicketState)
 
     graph.add_node("ReceiveRequest", receive_request)
-    graph.add_node("ClassifyRequest", partial(classify_request, llm_client=llm_client))
+    graph.add_node("ClassifyRequest", partial(classify_request, llm_client=llm_client_gigachat))
     graph.add_node("EscalateComplaint", escalate_complaint)
     graph.add_node("PrepareSearchContext", prepare_search_context)
     graph.add_node(
         "SearchKnowledgeBase",
         partial(search_knowledge_base, kb=kb, top_k=settings.kb_top_k),
     )
-    graph.add_node("GenerateAnswer", partial(generate_answer, llm_client=llm_client))
+    graph.add_node("GenerateAnswer", partial(generate_answer, llm_client=llm_client_gigachat))
     graph.add_node("GenerateFallbackAnswer", generate_fallback_answer)
-    graph.add_node("EvaluateAnswer", partial(evaluate_answer, llm_client=llm_client))
-    graph.add_node("RefineAnswer", partial(refine_answer, llm_client=llm_client))
+    graph.add_node("EvaluateAnswer", partial(evaluate_answer, llm_client=llm_client_gigachat))
+    graph.add_node("RefineAnswer", partial(refine_answer, llm_client=llm_client_gigachat))
     graph.add_node("ReturnAnswer", return_answer)
     graph.add_node("EscalateLowQuality", escalate_low_quality)
     graph.add_node("HandleError", handle_error)
@@ -104,23 +108,8 @@ def build_support_graph(settings: Settings, logger: logging.Logger):
     graph.add_edge("EscalateTechnicalError", END)
     graph.add_edge("ReturnAnswer", END)
 
-    app = graph.compile()
-
-    def invoke(initial_state: SupportTicketState) -> SupportTicketState:
-        state = dict(initial_state)
-        state.setdefault("quality_threshold", settings.quality_threshold)
-        state.setdefault("max_refinements", settings.max_refinements)
-        logger.info("ticket_id=%s event=graph_invocation_started", state.get("ticket_id"))
-        result = app.invoke(state)
-        append_event(result, "Graph", "graph_completed")
-        logger.info(
-            "ticket_id=%s event=graph_invocation_completed escalated=%s",
-            result.get("ticket_id"),
-            result.get("escalated"),
-        )
-        return result
-
-    return invoke
+    app = graph.compile(checkpointer=checkpointer)
+    return app
 
 
 def route_on_error_or_continue(state: SupportTicketState) -> str:

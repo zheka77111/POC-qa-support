@@ -1,48 +1,66 @@
 from __future__ import annotations
 
-from support_agent.logging_utils import append_error, append_event
+from support_agent.llm import LLMClient, TicketClassification
+from support_agent.logging_utils import make_error, make_event
 from support_agent.prompts import build_classification_prompt
 from support_agent.state import SupportTicketState
 
 
 def receive_request(state: SupportTicketState) -> SupportTicketState:
-    state["current_node"] = "ReceiveRequest"
-    state.setdefault("events", [])
-    state.setdefault("errors", [])
-    state.setdefault("retrieved_docs", [])
-    state.setdefault("refinement_count", 0)
-    state.setdefault("escalated", False)
-    state.setdefault("escalation_reason", None)
-    state.setdefault("has_error", False)
-    append_event(state, "ReceiveRequest", "request_received", {"ticket_id": state.get("ticket_id")})
-    return state
+    return {
+        "current_node": "ReceiveRequest",
+        "events": [
+            make_event(
+                state,
+                "ReceiveRequest",
+                "request_received",
+                {"ticket_id": state.get("ticket_id")},
+            )
+        ],
+        "retrieved_docs": state.get("retrieved_docs", []),
+        "refinement_count": state.get("refinement_count", 0),
+        "escalated": state.get("escalated", False),
+        "escalation_reason": state.get("escalation_reason"),
+        "has_error": state.get("has_error", False),
+    }
 
 
-def classify_request(state: SupportTicketState, llm_client) -> SupportTicketState:
-    state["current_node"] = "ClassifyRequest"
+def classify_request(state: SupportTicketState, llm_client: LLMClient) -> SupportTicketState:
     try:
         system_prompt, user_prompt = build_classification_prompt(state)
-        data = llm_client.invoke_json(system_prompt, user_prompt)
-        state["is_complaint"] = bool(data.get("is_complaint", False))
-        state["category"] = str(data.get("category", "other"))
-        state["sentiment"] = str(data.get("sentiment", "neutral"))
-        state["urgency"] = str(data.get("urgency", "medium"))
-        append_event(
-            state,
-            "ClassifyRequest",
-            "classification_done",
-            {
-                "is_complaint": state["is_complaint"],
-                "category": state["category"],
-                "sentiment": state["sentiment"],
-                "urgency": state["urgency"],
-            },
+        data: TicketClassification = llm_client.invoke_structured(
+            system_prompt,
+            user_prompt,
+            TicketClassification,
         )
-        return state
+        return {
+            "current_node": "ClassifyRequest",
+            "is_complaint": data.is_complaint,
+            "category": data.category,
+            "events": [
+                make_event(
+                    state,
+                    "ClassifyRequest",
+                    "classification_done",
+                    {
+                        "is_complaint": data.is_complaint,
+                        "category": data.category,
+                    },
+                )
+            ],
+        }
     except Exception as exc:
-        state["has_error"] = True
-        state["error_node"] = "ClassifyRequest"
-        append_error(state, "ClassifyRequest", type(exc).__name__, str(exc))
-        append_event(state, "ClassifyRequest", "classification_failed", {"error": str(exc)})
-        return state
-
+        return {
+            "current_node": "ClassifyRequest",
+            "has_error": True,
+            "error_node": "ClassifyRequest",
+            "errors": [make_error(state, "ClassifyRequest", type(exc).__name__, str(exc))],
+            "events": [
+                make_event(
+                    state,
+                    "ClassifyRequest",
+                    "classification_failed",
+                    {"error": str(exc)},
+                )
+            ],
+        }

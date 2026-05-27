@@ -2,17 +2,81 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Mapping, TypeVar, overload
+
+from pydantic import BaseModel, Field
 
 from support_agent.config import Settings
+from support_agent.state import Category
+
+
+StructuredOutputModel = TypeVar("StructuredOutputModel", bound=BaseModel)
+StructuredOutputSchema = Mapping[str, Any] | type[BaseModel]
 
 
 class LLMClient:
     def invoke_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         raise NotImplementedError
 
+    @overload
+    def invoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[StructuredOutputModel],
+    ) -> StructuredOutputModel: ...
+
+    @overload
+    def invoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: Mapping[str, Any],
+    ) -> dict[str, Any]: ...
+
+    def invoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: StructuredOutputSchema,
+    ) -> BaseModel | dict[str, Any]:
+        raise NotImplementedError
+
     def invoke_text(self, system_prompt: str, user_prompt: str) -> str:
         raise NotImplementedError
+
+
+class TicketClassification(BaseModel):
+    """Классификация тикета поддержки для определения дальнейшей логики обработки."""
+
+    is_complaint: bool = Field(
+        description="Является ли тикет жалобой, которая должна быть эскалирована."
+    )
+    category: Category = Field(
+        description="Категория тикета поддержки, например, жалоба, технический вопрос, вопрос о биллинге, как сделать или другое."
+    )
+
+
+class AnswerEvaluation(BaseModel):
+    """Оценка качества ответа поддержки по нескольким осям для принятия решения об эскалации и улучшения ответа."""
+
+    completeness: float = Field(
+        ge=0,
+        le=1,
+        description="Насколько полно ответ, от 0 до 1.",
+    )
+    politeness: float = Field(
+        ge=0,
+        le=1,
+        description="Насколько вежливо составлен ответ, от 0 до 1.",
+    )
+    relevance: float = Field(
+        ge=0,
+        le=1,
+        description="Насколько релевантен ответ, от 0 до 1.",
+    )
+    notes: str = Field(description="Short review notes for improving the answer.")
+
 
 
 class MockLLMClient(LLMClient):
@@ -62,33 +126,24 @@ class MockLLMClient(LLMClient):
 
             if is_complaint:
                 category = "complaint"
-                sentiment = "negative"
-                urgency = "high"
             elif any(k in ticket_text for k in ["оплат", "карт", "billing"]):
                 category = "billing_question"
-                sentiment = "neutral"
-                urgency = "medium"
             elif any(k in ticket_text for k in ["ошибка", "500", "не работает"]):
                 category = "technical_question"
-                sentiment = "neutral"
-                urgency = "high"
             elif any(k in ticket_text for k in ["как", "где", "можно ли"]):
                 category = "how_to"
-                sentiment = "neutral"
-                urgency = "low"
             else:
                 category = "other"
-                sentiment = "neutral"
-                urgency = "medium"
 
             return {
                 "is_complaint": is_complaint,
                 "category": category,
-                "sentiment": sentiment,
-                "urgency": urgency,
             }
 
-        if "evaluate support answer quality" in system_prompt.lower():
+        if (
+            "evaluate support answer quality" in system_prompt.lower()
+            or "оцениваешь качество ответа поддержки" in system_prompt.lower()
+        ):
             answer = _extract_block(user_prompt, "Answer draft:")
             length_score = min(1.0, max(0.2, len(answer) / 220.0))
             polite = 1.0 if any(k in answer.lower() for k in ["пожалуйста", "спасибо", "извин"]) else 0.7
@@ -101,6 +156,31 @@ class MockLLMClient(LLMClient):
             }
 
         return {}
+
+    @overload
+    def invoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[StructuredOutputModel],
+    ) -> StructuredOutputModel: ...
+
+    @overload
+    def invoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: Mapping[str, Any],
+    ) -> dict[str, Any]: ...
+
+    def invoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: StructuredOutputSchema,
+    ) -> BaseModel | dict[str, Any]:
+        response = self.invoke_json(system_prompt, user_prompt)
+        return _structured_response_to_schema(response, schema)
 
     def invoke_text(self, system_prompt: str, user_prompt: str) -> str:
         lower = user_prompt.lower()
@@ -141,7 +221,7 @@ class MockLLMClient(LLMClient):
 class GigaChatLLMClient(LLMClient):
     def __init__(self, settings: Settings):
         try:
-            from langchain_gigachat import GigaChat
+            from langchain_gigachat import GigaChat  # type: ignore[import-not-found]
         except Exception as exc:  # pragma: no cover
             raise RuntimeError("langchain-gigachat is not available") from exc
 
@@ -153,7 +233,7 @@ class GigaChatLLMClient(LLMClient):
             scope=settings.gigachat_scope,
             model=settings.gigachat_model,
             verify_ssl_certs=False,
-            timeout=60,
+            timeout=settings.timeout_seconds,
             top_p=0.9
         )
 
@@ -168,6 +248,37 @@ class GigaChatLLMClient(LLMClient):
         if isinstance(text, list):
             text = "".join(str(part) for part in text)
         return json.loads(_extract_json(text))
+
+    @overload
+    def invoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[StructuredOutputModel],
+    ) -> StructuredOutputModel: ...
+
+    @overload
+    def invoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: Mapping[str, Any],
+    ) -> dict[str, Any]: ...
+
+    def invoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: StructuredOutputSchema,
+    ) -> BaseModel | dict[str, Any]:
+        structured_model = self.model.with_structured_output(schema)
+        response = structured_model.invoke(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        )
+        return _structured_response_to_schema(response, schema)
 
     def invoke_text(self, system_prompt: str, user_prompt: str) -> str:
         response = self.model.invoke(
@@ -185,7 +296,33 @@ class GigaChatLLMClient(LLMClient):
 def build_llm_client(settings: Settings) -> LLMClient:
     if settings.llm_provider == "gigachat":
         return GigaChatLLMClient(settings)
+    if settings.llm_provider == "deepseek":
+        raise NotImplementedError("DeepSeek provider is not implemented yet")
     return MockLLMClient()
+
+
+def _structured_response_to_schema(
+    response: Any,
+    schema: StructuredOutputSchema,
+) -> BaseModel | dict[str, Any]:
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        if isinstance(response, schema):
+            return response
+        if isinstance(response, BaseModel):
+            return schema.model_validate(response.model_dump())
+        return schema.model_validate(response)
+
+    if isinstance(response, dict):
+        return response
+    if hasattr(response, "model_dump"):
+        data = response.model_dump()
+        if isinstance(data, dict):
+            return data
+    if hasattr(response, "dict"):
+        data = response.dict()
+        if isinstance(data, dict):
+            return data
+    raise TypeError(f"Structured output did not return a dict-like object: {type(response).__name__}")
 
 
 def _extract_json(text: str) -> str:

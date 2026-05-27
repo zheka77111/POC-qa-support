@@ -2,30 +2,37 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import Any
+from typing import Any, cast
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph.state import CompiledStateGraph
 
 from support_agent.config import Settings
 from support_agent.graph import build_support_graph
 from support_agent.logging_utils import setup_logger
+from support_agent.state import SupportTicketState
 from support_agent.test_cases import TEST_CASES_50
 
 
 def run_single(
-    invoke_graph,
+    app: CompiledStateGraph,
+    settings: Settings,
     ticket_id: str,
     user_text: str,
     threshold: float | None = None,
     max_refinements: int | None = None,
 ) -> dict[str, Any]:
-    state = {
+    state: SupportTicketState = {
         "ticket_id": ticket_id,
         "user_text": user_text,
+        "quality_threshold": threshold if threshold is not None else settings.quality_threshold,
+        "max_refinements": (
+            max_refinements if max_refinements is not None else settings.max_refinements
+        ),
     }
-    if threshold is not None:
-        state["quality_threshold"] = threshold
-    if max_refinements is not None:
-        state["max_refinements"] = max_refinements
-    result = invoke_graph(state)
+    config = RunnableConfig(configurable={"thread_id": ticket_id})
+    result = app.invoke(state, config=config)
     return {
         "ticket_id": ticket_id,
         "final_response": result.get("final_response", ""),
@@ -38,15 +45,16 @@ def run_single(
     }
 
 
-def run_batch(invoke_graph) -> dict[str, Any]:
+def run_batch(app: CompiledStateGraph, settings: Settings) -> dict[str, Any]:
     total = len(TEST_CASES_50)
     exact_expected = 0
     escalated_count = 0
     results = []
 
     for case in TEST_CASES_50:
-        out = run_single(invoke_graph, case["ticket_id"], case["user_text"])
-        expected = case["expected"]
+        case_data = cast(dict[str, Any], case)
+        out = run_single(app, settings, case_data["ticket_id"], case_data["user_text"])
+        expected = case_data["expected"]
         if expected == "complaint_escalation":
             ok = out["escalated"] is True
         else:
@@ -57,7 +65,7 @@ def run_batch(invoke_graph) -> dict[str, Any]:
             escalated_count += 1
         results.append(
             {
-                "ticket_id": case["ticket_id"],
+                "ticket_id": case_data["ticket_id"],
                 "expected": expected,
                 "actual_escalated": out["escalated"],
                 "actual_reason": out["escalation_reason"],
@@ -86,15 +94,17 @@ def main():
 
     settings = Settings.from_env()
     logger = setup_logger(settings.log_level)
-    invoke_graph = build_support_graph(settings=settings, logger=logger)
+    checkpointer = MemorySaver()
+    app = build_support_graph(settings=settings, logger=logger, checkpointer=checkpointer)
 
     if args.batch:
-        summary = run_batch(invoke_graph)
+        summary = run_batch(app, settings)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return
 
     output = run_single(
-        invoke_graph,
+        app,
+        settings,
         ticket_id=args.ticket_id,
         user_text=args.text,
         threshold=args.quality_threshold,

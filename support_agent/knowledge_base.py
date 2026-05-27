@@ -8,7 +8,10 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
 from langchain_core.documents import Document
 from langchain_gigachat import GigaChatEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 import pandas as pd
+from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
 
 from support_agent.config import Settings
 
@@ -29,11 +32,20 @@ class HybridChromaKnowledgeBase(KnowledgeBase):
         documents: list[Document],
         settings: Settings,
         collection_name: str = "support_kb_hybrid",
+        chunk_size: int = 700,
+        chunk_overlap: int = 80,
+        chroma_batch_size: int = 4,
     ):
         if not settings.gigachat_credentials:
             raise RuntimeError("GIGACHAT_CREDENTIALS is required for GigaChatEmbeddings")
 
-        self.documents = documents
+        self.source_documents = documents
+        # При подключении БД были большие документы, поэтому порезал на чанки, т.к. эмбеддинги ограничены по размеру текста. 
+        self.documents = chunk_documents(
+            documents,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
         self.settings = settings
         self.embeddings = GigaChatEmbeddings(
             credentials=settings.gigachat_credentials,
@@ -43,22 +55,86 @@ class HybridChromaKnowledgeBase(KnowledgeBase):
             timeout=60,
         )
         self.bm25 = BM25Retriever.from_documents(self.documents)
-        self.chroma = Chroma.from_documents(
-            documents=self.documents,
-            embedding=self.embeddings,
+        self.chroma = Chroma(
             collection_name=collection_name,
+            embedding_function=self.embeddings,
         )
+        for start in range(0, len(self.documents), chroma_batch_size):
+            self.chroma.add_documents(self.documents[start : start + chroma_batch_size])
 
+    # пример метода для построения базы знаний из тестовых Markdown файлов с вопросами и ответами.
     @classmethod
     def from_markdown_files(
         cls,
         file_paths: list[Path],
         settings: Settings,
+        collection_name: str = "from_markdown",
+        chunk_size: int = 700,
+        chunk_overlap: int = 80,
+        chroma_batch_size: int = 4,
     ) -> "HybridChromaKnowledgeBase":
         docs: list[Document] = []
         for path in file_paths:
             docs.extend(build_documents_from_markdown(path))
-        return cls(documents=docs, settings=settings)
+        return cls(
+            documents=docs,
+            settings=settings,
+            collection_name=collection_name,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            chroma_batch_size=chroma_batch_size,
+        )
+
+    # пример метода для построения базы знаний из PostgreSQL базы данных.
+    @classmethod
+    def from_postgres(
+        cls,
+        settings: Settings,
+        collection_name: str = "from_postgres",
+        chunk_size: int = 700,
+        chunk_overlap: int = 80,
+        chroma_batch_size: int = 4,
+    ) -> "HybridChromaKnowledgeBase":
+        """Example method to build a knowledge base from a PostgreSQL database. """
+        url = URL.create(
+            "postgresql+psycopg",
+            username="postgres",
+            password="postgres",
+            host="localhost",
+            port=5432,
+            database="postgres",
+        )
+        # Взял свою тестовую таблицу, которая не имеет отношения к тикетам поддержки, просто для демонстрации
+        query = "SELECT id, title, content, description FROM extracted_data"
+
+        engine = create_engine(url)
+        try:
+            df = pd.read_sql_query(query, engine)
+        finally:
+            engine.dispose()
+
+        documents: list[Document] = []
+        for _, row in df.loc[:25, ["id", "title", "content", "description"]].iterrows():
+            content = str(row["content"])
+            documents.append(
+                Document(
+                    page_content=content,
+                    metadata={
+                        "id": row["id"],
+                        "title": row["title"],
+                        "content": row["content"],
+                        "description": row["description"],
+                    },
+                )
+            )
+        return cls(
+            documents=documents,
+            settings=settings,
+            collection_name=collection_name,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            chroma_batch_size=chroma_batch_size,
+        )
 
     def search(
         self,
@@ -66,9 +142,13 @@ class HybridChromaKnowledgeBase(KnowledgeBase):
         filters: dict[str, object] | None = None,
         top_k: int = 3,
     ) -> list[dict[str, object]]:
-        # Dense retriever from Chroma
+        """Search the knowledge base using a hybrid of BM25 and dense retrieval."""
+
+
         dense = self.chroma.as_retriever(search_type="similarity", search_kwargs={"k": max(top_k, 5)})
-        hybrid = EnsembleRetriever(
+        # В реальной реализации можно динамически регулировать веса в зависимости от запроса или других факторов, но для простоты сейчас они фиксированные.
+        # Я поставил в . env больший вес для sparse исходя из тестовых данных
+        hybrid = EnsembleRetriever( 
             retrievers=[dense, self.bm25],
             weights=[self.settings.retriever_weights.get("chroma") or 0.5, self.settings.retriever_weights.get("bm25") or 0.5],
         )
@@ -80,12 +160,47 @@ class HybridChromaKnowledgeBase(KnowledgeBase):
             {
                 "id": str(doc.metadata.get("id", "")),
                 "title": str(doc.metadata.get("title", "")),
-                # "question": str(doc.metadata.get("question", "")),
-                "content": str(doc.metadata.get("answer", "")),
+                "content": str(doc.metadata.get("content", doc.page_content)),
                 "source": str(doc.metadata.get("source", "")),
             }
             for doc in trimmed
         ]
+
+
+def chunk_documents(
+    documents: list[Document],
+    chunk_size: int = 700,
+    chunk_overlap: int = 80,
+) -> list[Document]:
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+
+    chunks: list[Document] = []
+    for doc in documents:
+        base_metadata = {
+            key: value
+            for key, value in doc.metadata.items()
+            if key not in {"answer", "content", "description"}
+        }
+        split_texts = splitter.split_text(doc.page_content)
+        chunk_count = len(split_texts)
+
+        for index, text in enumerate(split_texts):
+            metadata = {
+                **base_metadata,
+                "answer": text,
+                "chunk_index": index,
+                "chunk_count": chunk_count,
+            }
+            if "id" in base_metadata:
+                metadata["parent_id"] = base_metadata["id"]
+
+            chunks.append(Document(page_content=text, metadata=metadata))
+
+    return chunks
 
 
 def build_documents_from_markdown(path: Path) -> list[Document]:
@@ -95,12 +210,9 @@ def build_documents_from_markdown(path: Path) -> list[Document]:
         docs.append(
             Document(
                 page_content=
-                        # f"Question: {entry['question']}\n" \s
                         f"Answer: {entry['answer']}",
                 metadata={
                     "id": entry["id"],
-                    # "title": entry["question"],
-                    # "question": entry["question"],
                     "answer": entry["answer"],
                     "source": str(path),
                 },
@@ -121,7 +233,6 @@ def parse_markdown_qa(path: Path) -> list[dict[str, str]]:
         entries.append(
             {
                 "id": match.group(1).strip(),
-                # "question": match.group(2).strip(),
                 "answer": match.group(3).strip(),
             }
         )

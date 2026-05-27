@@ -45,6 +45,21 @@ def append_event(
     )
 
 
+def make_event(
+    state: SupportTicketState,
+    node: str,
+    event: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "timestamp": now_iso(),
+        "ticket_id": state.get("ticket_id"),
+        "node": node,
+        "event": event,
+        "payload": payload or {},
+    }
+
+
 def append_error(
     state: SupportTicketState,
     node: str,
@@ -61,4 +76,19 @@ def append_error(
             "message": message,
         }
     )
+
+
+def make_error(
+    state: SupportTicketState,
+    node: str,
+    error_type: str,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "timestamp": now_iso(),
+        "ticket_id": state.get("ticket_id"),
+        "node": node,
+        "error_type": error_type,
+        "message": message,
+    }
 

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from operator import add
+from typing import Annotated, Any, Literal, TypedDict
 
 
 Category = Literal["complaint", "technical_question", "billing_question", "how_to", "other"]
-Sentiment = Literal["negative", "neutral", "positive"]
-Urgency = Literal["low", "medium", "high"]
 
 
 class SupportTicketState(TypedDict, total=False):
@@ -14,8 +13,6 @@ class SupportTicketState(TypedDict, total=False):
 
     category: Category
     is_complaint: bool
-    urgency: Urgency
-    sentiment: Sentiment
 
     search_query: str
     search_filters: dict[str, Any]
@@ -41,5 +38,5 @@ class SupportTicketState(TypedDict, total=False):
     current_node: str
     has_error: bool
     error_node: str
-    errors: list[dict[str, Any]]
-    events: list[dict[str, Any]]
+    errors: Annotated[list[dict[str, Any]], add]
+    events: Annotated[list[dict[str, Any]], add]
