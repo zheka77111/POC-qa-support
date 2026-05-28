@@ -234,7 +234,7 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
             "quality_score": score,
             "evaluation_notes": feedback,
             "model_retry_count": retries + 1,
-            "messages": [HumanMessage(content=feedback)],
+            "messages": [ToolMessage(content=feedback)],
             "jump_to": "model",
             "events": [
                 make_event(
