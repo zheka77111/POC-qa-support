@@ -52,6 +52,18 @@ class CategoryClassification(BaseModel):
     category: Category
 
 
+class AnswerQualityEvaluation(BaseModel):
+    """Оценка качества ответа ассистента.
+      quality_score - итоговая оценка 0..1, completeness - полнота 0..1, 
+      politeness - вежливость 0..1, relevance - релевантность 0..1, 
+      notes - короткие замечания на русском языке."""
+    quality_score: float
+    completeness: float
+    politeness: float
+    relevance: float
+    notes: str
+
+
 BASE_AGENT_PROMPT = (
     "Ты диалоговый помощник техподдержки. "
     "Веди диалог только по базе знаний и отвечай коротко, вежливо и по делу. "
@@ -185,19 +197,37 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
             str: The search results.
         """
         docs = kb.search(query=query, filters=None, top_k=settings.kb_top_k)
-       
+
         parts = []
         for i, d in enumerate(docs):
             src = d.metadata.get("source") or d.metadata.get("filename") or "unknown"
             parts.append(f"\n[# Фрагмент {i} | source={src}]\n{d.page_content}")
-        
-        logger.info(f"Knowledge base search for query: '{query}' returned {len(parts)} relevant results.")
-        
-    
+
+        relevant_parts: list[str] = []
+        if parts:
+            llm_structured = llm.with_structured_output(RelevantChunkClassification)
+            response = llm_structured.invoke([
+                SystemMessage(content=f"""Ты — эксперт по оценке релевантности ответов поддержки.
+        ЗАДАЧА: Оцени релевантность данных, извлеченных из базы знаний по отношению к вопросу клиента.
+        На вход поступают несколько фрагментов из базы знаний и вопрос клиента.
+        Твоя задача — оценить, насколько эти фрагменты релевантны для ответа на вопрос клиента.
+        Вот фрагменты из базы знаний: {parts}. Вот запрос клиента:"""),
+                HumanMessage(content=f"{query}"),
+            ])
+
+            response = cast(RelevantChunkClassification, response)
+            relevant_parts = [part for part, is_relevant in zip(parts, response.relevant_chunks) if is_relevant]
+
+        if relevant_parts:
+            result: str | list[str] = relevant_parts
+        else:
+            result = "Документы найдены, но не релевантные для ответа на вопрос клиента."
+        logger.info(f"Knowledge base search for query: '{query}' returned {len(relevant_parts)} relevant results.")
+
         return Command(update={
-                "retrieved_docs": parts,
+                "retrieved_docs": result if result else [],
                 "messages": [
-            ToolMessage(content=f"База знаний вернула: {parts if parts else "NOT_FOUND"} ", tool_call_id=tool_call_id, name="subgraph_agent")
+            ToolMessage(content=f"База знаний вернула: {result if result else 'NOT_FOUND'} ", tool_call_id=tool_call_id, name="knowledge_base_search")
         ],
     })
         
@@ -250,6 +280,8 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
             return None
 
         score, completeness, politeness, relevance, notes = _evaluate_answer_quality(_message_text(last_ai))
+        logger.info(f"Evaluated answer quality: score={score}, completeness={completeness}, politeness={politeness}, relevance={relevance}, notes={notes} for ticket: {state.get('ticket_id')}"
+        )
         retries = state.get("model_retry_count", 0)
         threshold = state.get("quality_threshold", settings.quality_threshold)
         max_retries = state.get("max_model_retries", settings.max_model_retries)
@@ -318,7 +350,6 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
 def receive_request(state: SupportTicketState) -> dict[str, Any]:
     user_text = state.get("user_text") or _latest_user_query(state.get("messages", []))
     updates: dict[str, Any] = {
-        "current_node": "ReceiveRequest",
         "user_text": user_text,
         "quality_threshold": state.get("quality_threshold", 0.75),
         "max_model_retries": state.get("max_model_retries", 1),
@@ -387,7 +418,6 @@ def classify_category(state: SupportTicketState, chat_model: Any) -> dict[str, A
 
 def gather_classifications(state: SupportTicketState) -> dict[str, Any]:
     return {
-        "current_node": "GatherClassifications",
         "is_complaint": state.get("is_complaint"),
         "category": state.get("category"),
         "urgency": state.get("urgency"),
@@ -411,7 +441,6 @@ def finalize_response(state: SupportTicketState) -> dict[str, Any]:
     final_text = _message_text(last_ai) if last_ai else ""
     return {
         "messages":[AIMessage(content=final_text)],
-        "current_node": "FinalizeResponse",
         "final_response": final_text,
         "escalated": False,
         "escalation_reason": None,
@@ -480,20 +509,51 @@ def _structured_value(output: Any, key: str, default: Any) -> Any:
 
 def _evaluate_answer_quality(answer: str) -> tuple[float, float, float, float, str]:
     normalized = answer.strip()
-    answer_lower = normalized.lower()
+    if not normalized:
+        return 0.0, 0.0, 0.0, 0.0, "пустой или нерелевантный ответ"
 
-    completeness = min(1.0, max(0.1, len(normalized) / 220.0))
-    politeness = 1.0 if any(token in answer_lower for token in ("спасибо", "пожалуйста", "извин")) else 0.7
-    relevance = 0.95 if normalized else 0.1
-
-    notes_parts: list[str] = []
-    if len(normalized) < 40:
-        notes_parts.append("ответ слишком короткий")
-    if politeness < 0.9:
-        notes_parts.append("не хватает вежливой формулировки")
-    if relevance < 0.5:
-        notes_parts.append("пустой или нерелевантный ответ")
-
-    notes = "; ".join(notes_parts) if notes_parts else "замечаний нет"
-    quality_score = round(max(0.0, min(1.0, 0.4 * completeness + 0.2 * politeness + 0.4 * relevance)), 3)
-    return quality_score, round(completeness, 3), round(politeness, 3), round(relevance, 3), notes
+    try:
+        evaluator = llm.with_structured_output(AnswerQualityEvaluation)
+        result = cast(
+            AnswerQualityEvaluation,
+            evaluator.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "Ты оцениваешь качество ответа ассистента техподдержки.\n"
+                            "Верни строго структурированный результат:\n"
+                            "- quality_score: итоговая оценка 0..1\n"
+                            "- completeness: полнота 0..1\n"
+                            "- politeness: вежливость 0..1\n"
+                            "- relevance: релевантность 0..1\n"
+                            "- notes: короткие замечания на русском языке\n"
+                            "Оцени строго по шкале 0..1."
+                        )
+                    ),
+                    HumanMessage(content=f"Оцени этот ответ:\n{normalized}"),
+                ]
+            ),
+        )
+        return (
+            round(max(0.0, min(1.0, result.quality_score)), 3),
+            round(max(0.0, min(1.0, result.completeness)), 3),
+            round(max(0.0, min(1.0, result.politeness)), 3),
+            round(max(0.0, min(1.0, result.relevance)), 3),
+            result.notes.strip() or "замечаний нет",
+        )
+    except Exception:
+        # объяснение: если модель не может корректно оценить, используем простые эвристики для базовой оценки качества ответа
+        answer_lower = normalized.lower()
+        completeness = min(1.0, max(0.1, len(normalized) / 220.0))
+        politeness = 1.0 if any(token in answer_lower for token in ("спасибо", "пожалуйста", "извин")) else 0.7
+        relevance = 0.95 if normalized else 0.1
+        notes_parts: list[str] = []
+        if len(normalized) < 40:
+            notes_parts.append("ответ слишком короткий")
+        if politeness < 0.9:
+            notes_parts.append("не хватает вежливой формулировки")
+        if relevance < 0.5:
+            notes_parts.append("пустой или нерелевантный ответ")
+        notes = "; ".join(notes_parts) if notes_parts else "замечаний нет"
+        quality_score = round(max(0.0, min(1.0, 0.4 * completeness + 0.2 * politeness + 0.4 * relevance)), 3)
+        return quality_score, round(completeness, 3), round(politeness, 3), round(relevance, 3), notes
