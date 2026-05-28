@@ -107,6 +107,7 @@ flowchart TD
 - `support_agent/knowledge_base.py` — retrieval-слой.
 - `support_agent/logging_utils.py` — генерация событий/ошибок.
 - `tests/test_dataset_json.py` — проверка консистентности датасета.
+- `support_agent/config.py` — настройки, берутся из .env.
 
 ## Тесты
 
