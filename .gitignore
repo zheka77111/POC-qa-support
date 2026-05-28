@@ -9,3 +9,4 @@ wheels/
 # Virtual environments
 .venv
 support_agent/state.py
+.env
