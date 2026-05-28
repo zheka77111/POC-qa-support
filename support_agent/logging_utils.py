@@ -1,26 +1,44 @@
 from __future__ import annotations
+from pathlib import Path
 
-import logging
+from loguru import logger
 from datetime import datetime, timezone
 from typing import Any
 
 from support_agent.state import SupportTicketState
 
 
-def setup_logger(level: str = "INFO") -> logging.Logger:
-    logger = logging.getLogger("support_agent")
-    if logger.handlers:
-        logger.setLevel(level)
-        return logger
+def setup_logger(
+    level: str = "INFO",
+    log_file: str = "logs/support_agent.log",
+): 
+    logger.remove()
 
-    logger.setLevel(level)
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    # Консоль
+    logger.add(
+        sink=lambda msg: print(msg, end=""),
+        level=level.upper(),
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name} | {message}",
+        colorize=True,
     )
-    logger.addHandler(handler)
-    logger.propagate = False
+
+    # Файл
+    path = Path(log_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger.add(
+        sink=path,
+        level=level.upper(),
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name} | {message}",
+        rotation="10 MB",
+        retention="14 days",
+        compression="zip",
+        encoding="utf-8",
+    )
+
     return logger
+
+
 
 
 def now_iso() -> str:

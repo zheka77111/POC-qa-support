@@ -37,3 +37,8 @@ class SupportTicketState(AgentState):
     escalated: bool
     escalation_reason: str | None
     refinement_count: int
+
+    has_error: bool
+    error_node: str
+    errors: Annotated[list[dict[str, Any]], add]
+    events: Annotated[list[dict[str, Any]], add]

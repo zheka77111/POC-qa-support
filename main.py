@@ -5,11 +5,13 @@ import json
 from typing import Any, cast
 
 from langchain_core.runnables import RunnableConfig
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
-from support_agent.config import Settings
+from support_agent.config import Settings, configure_langsmith
 from support_agent.graph import build_support_graph
+from support_agent.knowledge_base import HybridChromaKnowledgeBase
 from support_agent.logging_utils import setup_logger
 from support_agent.state import SupportTicketState
 from support_agent.test_cases import TEST_CASES_50
@@ -21,14 +23,15 @@ def run_single(
     ticket_id: str,
     user_text: str,
     threshold: float | None = None,
-    max_refinements: int | None = None,
+    max_model_retries: int | None = None,
 ) -> dict[str, Any]:
-    state: SupportTicketState = {
+    state: dict[str, Any] = {
         "ticket_id": ticket_id,
         "user_text": user_text,
+        "messages": [HumanMessage(content=user_text)],
         "quality_threshold": threshold if threshold is not None else settings.quality_threshold,
-        "max_refinements": (
-            max_refinements if max_refinements is not None else settings.max_refinements
+        "max_model_retries": (
+            max_model_retries if max_model_retries is not None else settings.max_model_retries
         ),
     }
     config = RunnableConfig(configurable={"thread_id": ticket_id})
@@ -89,13 +92,19 @@ def main():
     parser.add_argument("--text", type=str, default="Не могу войти в личный кабинет, забыл пароль.")
     parser.add_argument("--batch", action="store_true", help="Run all test cases")
     parser.add_argument("--quality-threshold", type=float, default=None)
-    parser.add_argument("--max-refinements", type=int, default=None)
+    parser.add_argument("--max-model-retries", type=int, default=None)
     args = parser.parse_args()
 
     settings = Settings.from_env()
-    logger = setup_logger(settings.log_level)
+    configure_langsmith(settings)
+    logger = setup_logger(settings.log_level, log_file = f"logs/support_agent_{args.ticket_id}.log")
     checkpointer = MemorySaver()
-    app = build_support_graph(settings=settings, logger=logger, checkpointer=checkpointer)
+    kb = HybridChromaKnowledgeBase.from_markdown_files(settings=settings)
+    app = build_support_graph(
+        settings=settings,
+        kb=kb,
+        checkpointer=checkpointer,
+    )
 
     if args.batch:
         summary = run_batch(app, settings)
@@ -108,7 +117,7 @@ def main():
         ticket_id=args.ticket_id,
         user_text=args.text,
         threshold=args.quality_threshold,
-        max_refinements=args.max_refinements,
+        max_model_retries=args.max_model_retries,
     )
     print(json.dumps(output, ensure_ascii=False, indent=2))
 

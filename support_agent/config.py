@@ -1,74 +1,70 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from pathlib import Path
-from dotenv import load_dotenv
 
-load_dotenv()
-@dataclass(frozen=True)
-class Settings:
-    llm_provider: str = "mock"
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    llm_provider: str = "gigachat"
+    # порог по качеству ответа
     quality_threshold: float = 0.75
-    max_refinements: int = 2
+    max_model_retries: int = 1
+    # кол-во документов из кб, которые отдаются в промпт, при поиске по базе знаний
     kb_top_k: int = 3
+    
     top_p: float = 0.9
     timeout_seconds: int = 90
     log_level: str = "INFO"
-    gigachat_credentials: str | None = None
+
+    gigachat_credentials: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GIGACHAT_API_KEY", "GIGACHAT_CREDENTIALS"),
+    )
     gigachat_scope: str = "GIGACHAT_API_CORP"
     gigachat_model: str = "GigaChat-2-Max"
+    # взял эмбеддинги попроще, т.к. датасет простой 
     embeddings_model: str = "Embeddings-2"
-    retriever_weights: dict[str, float] = field(
-        default_factory=lambda: {"chroma": 0.5, "bm25": 0.5}
-    )
-    files: list[str] = field(default_factory=list)
+
+    # веса для гибридного поиска по базе знаний, поставил больший вес для BM25,
+    #  т.к. эмбеддинги не всегда корректно обрабатывают технические термины и 
+    # могут отдавать нерелевантные результаты, в то время как BM25 хорошо справляется с такими случаями.
+    # для демо это лучше подходит
+    retriever_weight_chroma: float = Field(default=0.5, validation_alias="RETRIEVER_WEIGHT_CHROMA")
+    retriever_weight_bm25: float = Field(default=0.5, validation_alias="RETRIEVER_WEIGHT_BM25")
+
+    dataset_path: str = Field(default="dataset", validation_alias="DATASET_PATH")
+
+    # логирование в LangSmith для визуализации цепочек в интерфейсе LangSmith, 
+    # можно отключить, если не нужно.
+    langsmith_tracing: bool = Field(default=False, validation_alias="LANGSMITH_TRACING")
+    langsmith_api_key: str | None = Field(default=None, validation_alias="LANGSMITH_API_KEY")
+    langsmith_project: str = "Smart_support_agent"
+    langsmith_endpoint: str | None = Field(default="https://api.smith.langchain.com", validation_alias="LANGSMITH_ENDPOINT")
+
+    @property
+    def retriever_weights(self) -> dict[str, float]:
+        return {
+            "chroma": self.retriever_weight_chroma,
+            "bm25": self.retriever_weight_bm25,
+        }
 
     @staticmethod
-    def from_env() -> "Settings":
-        load_dotenv()
-        return Settings(
-            llm_provider=os.getenv("LLM_PROVIDER", "mock").strip().lower(),
-            quality_threshold=float(os.getenv("QUALITY_THRESHOLD", "0.75")),
-            max_refinements=int(os.getenv("MAX_REFINEMENTS", "2")),
-            kb_top_k=int(os.getenv("KB_TOP_K", "3")),
-            log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
-            gigachat_credentials=os.getenv("GIGACHAT_API_KEY")
-            or os.getenv("GIGACHAT_CREDENTIALS"),
-            embeddings_model=os.getenv("EMBEDDINGS_MODEL", "Embeddings-2").strip(),
-            gigachat_scope=os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_CORP"),
-            gigachat_model=os.getenv("GIGACHAT_MODEL", "GigaChat-2-Max"),
-            top_p=float(os.getenv("TOP_P", "0.9")),
-            retriever_weights={
-                "chroma": float(os.getenv("RETRIEVER_WEIGHT_CHROMA", "0.5")),
-                "bm25": float(os.getenv("RETRIEVER_WEIGHT_BM25", "0.5")),},
-            
-            files=_parse_files(os.getenv("FILES")),
-            timeout_seconds=int(os.getenv("TIMEOUT_SECONDS", "150")),
-        )
+    def from_env() -> Settings:
+        return Settings()
 
-
-def _load_dotenv(path: str | Path = ".env") -> None:
-    dotenv_path = Path(path)
-    if not dotenv_path.exists():
-        return
-
-    for raw_line in dotenv_path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("\"'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-def _parse_files(value: str | None) -> list[str]:
-    if not value:
-        return []
-
-    stripped = value.strip().strip("[]")
-    return [item.strip().strip("\"'") for item in stripped.split(",") if item.strip()]
-            
+def configure_langsmith(settings: Settings) -> None:
+    if settings.langsmith_api_key:
+        os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key
+    if settings.langsmith_project:
+        os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
+    if settings.langsmith_endpoint:
+        os.environ["LANGSMITH_ENDPOINT"] = settings.langsmith_endpoint
+    os.environ["LANGSMITH_TRACING"] = "true" if settings.langsmith_tracing else "false"

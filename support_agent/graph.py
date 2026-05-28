@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-from functools import partial
 from typing import Annotated, Any, Callable, Literal, cast
 from loguru import logger
 from langchain.agents import create_agent
@@ -16,19 +14,20 @@ from support_agent.config import Settings
 from support_agent.knowledge_base import HybridChromaKnowledgeBase
 from support_agent.logging_utils import make_error, make_event
 from support_agent.nodes.escalation import escalate_complaint
+from support_agent.prompts import (
+    ANSWER_QUALITY_EVALUATION_SYSTEM_PROMPT,
+    BASE_AGENT_PROMPT,
+    CATEGORY_CLASSIFICATION_PROMPT,
+    COMPLAINT_CLASSIFICATION_PROMPT,
+    PRIORITY_INSTRUCTION_PROMPT,
+    URGENCY_CLASSIFICATION_PROMPT,
+    build_answer_quality_user_prompt,
+    build_dynamic_category_prompt,
+    build_quality_retry_feedback,
+)
 from support_agent.state import Category, SupportTicketState, Urgency
 from support_agent.llm import build_chat_model
 from langchain_core.tools.base import InjectedToolCallId
-from langchain_core.prompts import ChatPromptTemplate
-from langgraph.runtime import Runtime
-
-BASE_AGENT_PROMPT = (
-    "Ты диалоговый помощник техподдержки. "
-    "Веди диалог только по базе знаний и отвечай коротко, вежливо и по делу. "
-    "Для категорий technical_question, billing_question, how_to сначала используй инструмент knowledge_base_search. "
-    "Если инструмент вернул NOT_FOUND, ответь ровно: 'Не знаю'. "
-    "Если категория обращения == other, ответь ровно: 'По этой теме я не поддерживаю диалог.' и не вызывай инструменты."
-)
 
 settings = Settings()
 
@@ -36,11 +35,6 @@ settings = Settings()
 class ComplaintClassification(BaseModel):
     """Классифицирует, является ли обращение жалобой. В случае жалобы эскалирует на оператора."""
     is_complaint: bool
-
-class RelevantChunkClassification(BaseModel):
-    """Классифицирует релевантность найденных в базе знаний фрагментов. 
-    Вернет список bool для каждого фрагмента, где True - релевантный, False - нерелевантный."""
-    relevant_chunks: list[bool]
 
 class UrgencyClassification(BaseModel):
     """Классифицирует срочность обращения. Может быть low, medium или high."""
@@ -64,59 +58,6 @@ class AnswerQualityEvaluation(BaseModel):
     notes: str
 
 
-BASE_AGENT_PROMPT = (
-    "Ты диалоговый помощник техподдержки. "
-    "Веди диалог только по базе знаний и отвечай коротко, вежливо и по делу. "
-    "Для категорий technical_question, billing_question, how_to сначала используй инструмент knowledge_base_search. "
-    "Если инструмент вернул NOT_FOUND, ответь ровно: 'Не знаю'. "
-    "Если категория обращения == other, ответь ровно: 'По этой теме я не поддерживаю диалог.' и не вызывай инструменты."
-)
-
-
-urgency_classification_prompt = ChatPromptTemplate.from_messages([(
-    "system",
-    "Ты классифицируешь срочность обращений в службу поддержки. "
-    "Верни структурированный ответ с полем: urgency (str)."
-),("human",
-   "{text}")])
-
-category_classification_prompt = ChatPromptTemplate.from_messages([
-    (
-    "system",
-    "Ты классифицируешь категории обращений в службу поддержки. "
-    "Верни структурированный ответ с полем: category."
-), 
-("human", "{text}")
-])
-
-classify_complaint_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """Ты — эксперт по классификации обращений клиентов.
-        
-ЗАДАЧА: Определи, является ли обращение жалобой.
-
-КРИТЕРИИ ЖАЛОБЫ (is_complaint=True):
-- Клиент выражает недовольство качеством товара/услуги
-- Есть требование компенсации, возврата денег, извинений
-- Упоминание негативного опыта, расстройства, гнева
-- Угроза прекратить сотрудничество
-- Жалоба на персонал, сроки, брак, недостаточный сервис
-
-НЕ ЖАЛОБА (is_complaint=False):
-- Обычный вопрос о сервисе, о процессах
-- Есть проблема с использованием сервисов / услуг / функций
-- Запрос информации, консультации
-- Положительный отзыв, благодарность
-- Предложение улучшить сервис (без недовольства)
-- Техническая проблема без эмоциональной окраски
-
-ВАЖНО: Будь строгим критериям. Если есть хоть малейшее недовольство — помечай как жалобу."""
-    ),
-    ("human", "{text}")
-])
-
-
 # Конструируем pipeline: промпт → модель со структурированным выводом
 llm = build_chat_model(settings)
 complaint_model = llm.with_structured_output(ComplaintClassification)
@@ -124,19 +65,18 @@ category_model = llm.with_structured_output(CategoryClassification)
 urgency_model = llm.with_structured_output(UrgencyClassification)
 
 
-complaint_classification = classify_complaint_prompt | complaint_model
-category_classification = category_classification_prompt | category_model
-urgency_classification = urgency_classification_prompt | urgency_model
+complaint_classification = COMPLAINT_CLASSIFICATION_PROMPT | complaint_model
+category_classification = CATEGORY_CLASSIFICATION_PROMPT | category_model
+urgency_classification = URGENCY_CLASSIFICATION_PROMPT | urgency_model
 
 
 def build_support_graph(
     settings: Settings,
-    logger: logger,
     kb: HybridChromaKnowledgeBase,
     checkpointer: Any | None = None,
 ) -> CompiledStateGraph:
-    _ = logger
-    chat_model = _build_chat_model(settings)
+
+    chat_model = build_chat_model(settings)
     dialog_agent = _build_dialog_agent(
         chat_model=chat_model,
         kb=kb,
@@ -146,11 +86,11 @@ def build_support_graph(
     graph = StateGraph(SupportTicketState)
 
     graph.add_node("ReceiveRequest", receive_request)
-    graph.add_node("ClassifyComplaint", partial(classify_complaint, chat_model=chat_model))
-    graph.add_node("ClassifyUrgency", partial(classify_urgency, chat_model=chat_model))
-    graph.add_node("ClassifyCategory", partial(classify_category, chat_model=chat_model))
+    graph.add_node("ClassifyComplaint", classify_complaint)
+    graph.add_node("ClassifyUrgency", classify_urgency)
+    graph.add_node("ClassifyCategory", classify_category)
     graph.add_node("GatherClassifications", gather_classifications)
-    graph.add_node("EscalateComplaint", escalate_complaint)
+    graph.add_node("EscalateComplaint", escalate_complaint_with_logging)
     graph.add_node("DialogAgent", dialog_agent)
     graph.add_node("FinalizeResponse", finalize_response)
 
@@ -170,14 +110,6 @@ def build_support_graph(
             "non_complaint": "DialogAgent",
         },
     )
-    # graph.add_conditional_edges(
-    #     "GatherClassifications",
-    #     route_after_gather,
-    #     {
-    #         "complaint": "EscalateComplaint",
-    #         "non_complaint": "DialogAgent",
-    #     },
-    # )
 
     graph.add_edge("DialogAgent", "FinalizeResponse")
     graph.add_edge("EscalateComplaint", END)
@@ -204,30 +136,13 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
             parts.append(f"\n[# Фрагмент {i} | source={src}]\n{d.page_content}")
 
         relevant_parts: list[str] = []
-        if parts:
-            llm_structured = llm.with_structured_output(RelevantChunkClassification)
-            response = llm_structured.invoke([
-                SystemMessage(content=f"""Ты — эксперт по оценке релевантности ответов поддержки.
-        ЗАДАЧА: Оцени релевантность данных, извлеченных из базы знаний по отношению к вопросу клиента.
-        На вход поступают несколько фрагментов из базы знаний и вопрос клиента.
-        Твоя задача — оценить, насколько эти фрагменты релевантны для ответа на вопрос клиента.
-        Вот фрагменты из базы знаний: {parts}. Вот запрос клиента:"""),
-                HumanMessage(content=f"{query}"),
-            ])
-
-            response = cast(RelevantChunkClassification, response)
-            relevant_parts = [part for part, is_relevant in zip(parts, response.relevant_chunks) if is_relevant]
-
-        if relevant_parts:
-            result: str | list[str] = relevant_parts
-        else:
-            result = "Документы найдены, но не релевантные для ответа на вопрос клиента."
-        logger.info(f"Knowledge base search for query: '{query}' returned {len(relevant_parts)} relevant results.")
+        
+        logger.info(f"Knowledge base search for query: '{query}' returned {len(parts)} relevant results.")
 
         return Command(update={
-                "retrieved_docs": result if result else [],
+                "retrieved_docs": parts if parts else [],
                 "messages": [
-            ToolMessage(content=f"База знаний вернула: {result if result else 'NOT_FOUND'} ", tool_call_id=tool_call_id, name="knowledge_base_search")
+            ToolMessage(content=f"База знаний вернула: {parts if parts else 'NOT_FOUND'} ", tool_call_id=tool_call_id, name="knowledge_base_search")
         ],
     })
         
@@ -235,11 +150,18 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
     @before_agent(state_schema=SupportTicketState)
     def apply_priority_policy(state: SupportTicketState, runtime: Any) -> dict[str, Any] | None:
         _ = runtime
-        urgent = state.get("urgency") in {"medium", "high"} or bool(state.get("is_return_in_3_days"))
+        logger.info(
+            "DialogAgent node started for ticket={}, category={}, urgency={}",
+            state.get("ticket_id"),
+            state.get("category"),
+            state.get("urgency"),
+        )
+        urgent = state.get("urgency") in {"medium", "high"} 
         if not urgent:
             return None
+        logger.info(f"Applying priority policy for ticket: {state.get('ticket_id')} with urgency: {state.get('urgency')}")
         return {
-            "priority_instruction": "Пользователю необходимо решить вопрос максимально срочно!",
+            "priority_instruction": PRIORITY_INSTRUCTION_PROMPT,
             "events": [
                 make_event(
                     state,
@@ -247,7 +169,7 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
                     "priority_instruction_applied",
                     {
                         "urgency": state.get("urgency"),
-                        "is_return_in_3_days": state.get("is_return_in_3_days"),
+                        
                     },
                 )
             ],
@@ -258,11 +180,9 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
                                     handler: Callable[[ModelRequest], ModelResponse],
                                         ) -> ModelResponse:
         category = request.state.get("category", "other")
-        dynamic_prompt_parts = [f"Категория обращения: {category}."]
         priority_instruction = request.state.get("priority_instruction")
-        if priority_instruction:
-            dynamic_prompt_parts.append(priority_instruction)
-        dynamic_prompt = "\n".join(dynamic_prompt_parts)
+        logger.info(f"Injecting dynamic system prompt for category: {category} with priority_instruction: {priority_instruction} for ticket: {request.state.get('ticket_id')}")
+        dynamic_prompt = build_dynamic_category_prompt(category, priority_instruction)
 
         if request.system_message:
             request.system_message = SystemMessage(
@@ -306,13 +226,7 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
                 ],
             }
 
-        feedback = (
-            "Качество ответа ниже порога. "
-            f"Проблемы: {notes}. "
-            "Перегенерируй ответ: исправь полноту, вежливость и релевантность; "
-            "используй knowledge_base_search, если нужны факты; "
-            "если данных нет, ответь ровно 'Не знаю'."
-        )
+        feedback = build_quality_retry_feedback(notes)
         return {
             "completeness": completeness,
             "politeness": politeness,
@@ -348,6 +262,7 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
 
 
 def receive_request(state: SupportTicketState) -> dict[str, Any]:
+    logger.info("ReceiveRequest node started for ticket={}", state.get("ticket_id"))
     user_text = state.get("user_text") or _latest_user_query(state.get("messages", []))
     updates: dict[str, Any] = {
         "user_text": user_text,
@@ -361,9 +276,15 @@ def receive_request(state: SupportTicketState) -> dict[str, Any]:
     return updates
 
 
-def classify_complaint(state: SupportTicketState, chat_model: Any) -> dict[str, Any]:
+def classify_complaint(state: SupportTicketState) -> dict[str, Any]:
+    logger.info("ClassifyComplaint node started for ticket={}", state.get("ticket_id"))
     try:
         classification = cast(ComplaintClassification, complaint_classification.invoke({"text": state.get("user_text")}))
+        logger.info(
+            "ClassifyComplaint node completed for ticket={} with is_complaint={}",
+            state.get("ticket_id"),
+            classification.is_complaint,
+        )
         return {
             "is_complaint": classification.is_complaint,
             "events": [
@@ -376,6 +297,7 @@ def classify_complaint(state: SupportTicketState, chat_model: Any) -> dict[str, 
             ],
         }
     except Exception as exc:
+        logger.exception("ClassifyComplaint node failed for ticket={}", state.get("ticket_id"))
         return {
             "is_complaint": True,
             "errors": [make_error(state, "ClassifyComplaint", type(exc).__name__, str(exc))],
@@ -383,14 +305,21 @@ def classify_complaint(state: SupportTicketState, chat_model: Any) -> dict[str, 
         }
 
 
-def classify_urgency(state: SupportTicketState, chat_model: Any) -> dict[str, Any]:
+def classify_urgency(state: SupportTicketState) -> dict[str, Any]:
+    logger.info("ClassifyUrgency node started for ticket={}", state.get("ticket_id"))
     try:
         classification = cast(UrgencyClassification, urgency_classification.invoke({"text": state.get("user_text")}))
+        logger.info(
+            "ClassifyUrgency node completed for ticket={} with urgency={}",
+            state.get("ticket_id"),
+            classification.urgency,
+        )
         return {
             "urgency": classification.urgency,
             "events": [make_event(state, "ClassifyUrgency", "classification_done", {"urgency": classification.urgency})],
         }
     except Exception as exc:
+        logger.exception("ClassifyUrgency node failed for ticket={}", state.get("ticket_id"))
         return {
             "urgency": "medium",
             "errors": [make_error(state, "ClassifyUrgency", type(exc).__name__, str(exc))],
@@ -398,14 +327,21 @@ def classify_urgency(state: SupportTicketState, chat_model: Any) -> dict[str, An
         }
 
 
-def classify_category(state: SupportTicketState, chat_model: Any) -> dict[str, Any]:
+def classify_category(state: SupportTicketState) -> dict[str, Any]:
+    logger.info("ClassifyCategory node started for ticket={}", state.get("ticket_id"))
     try:
         classification = cast(CategoryClassification, category_classification.invoke({"text": state.get("user_text")}))
+        logger.info(
+            "ClassifyCategory node completed for ticket={} with category={}",
+            state.get("ticket_id"),
+            classification.category,
+        )
         return {
             "category": classification.category,
             "events": [make_event(state, "ClassifyCategory", "classification_done", {"category": classification.category})],
         }
     except Exception as exc:
+        logger.exception("ClassifyCategory node failed for ticket={}", state.get("ticket_id"))
         return {
             "category": "other",
             "errors": [make_error(state, "ClassifyCategory", type(exc).__name__, str(exc))],
@@ -417,6 +353,13 @@ def classify_category(state: SupportTicketState, chat_model: Any) -> dict[str, A
 
 
 def gather_classifications(state: SupportTicketState) -> dict[str, Any]:
+    logger.info(
+        "GatherClassifications node started for ticket={} (is_complaint={}, category={}, urgency={})",
+        state.get("ticket_id"),
+        state.get("is_complaint"),
+        state.get("category"),
+        state.get("urgency"),
+    )
     return {
         "is_complaint": state.get("is_complaint"),
         "category": state.get("category"),
@@ -436,38 +379,37 @@ def gather_classifications(state: SupportTicketState) -> dict[str, Any]:
     }
 
 
+def escalate_complaint_with_logging(state: SupportTicketState) -> dict[str, Any]:
+    logger.info(
+        "EscalateComplaint node started for ticket={} (category={}, urgency={})",
+        state.get("ticket_id"),
+        state.get("category"),
+        state.get("urgency"),
+    )
+    result = escalate_complaint(state)
+    logger.info("EscalateComplaint node completed for ticket={}", state.get("ticket_id"))
+    return result
+
+
 def finalize_response(state: SupportTicketState) -> dict[str, Any]:
+    logger.info("FinalizeResponse node started for ticket={}", state.get("ticket_id"))
     last_ai = _last_ai_message(state.get("messages", []))
     final_text = _message_text(last_ai) if last_ai else ""
+    logger.info(
+        "FinalizeResponse node completed for ticket={} (response_len={})",
+        state.get("ticket_id"),
+        len(final_text),
+    )
     return {
-        "messages":[AIMessage(content=final_text)],
         "final_response": final_text,
         "escalated": False,
-        "escalation_reason": None,
-        "events": [make_event(state, "FinalizeResponse", "completed")],
+        "escalation_reason": None
+
     }
 
 
 def route_after_gather(state: SupportTicketState) -> Literal["complaint", "non_complaint"]:
     return "complaint" if bool(state.get("is_complaint")) else "non_complaint"
-
-
-def _build_chat_model(settings: Settings) -> Any:
-    if settings.llm_provider != "gigachat":
-        raise RuntimeError("Dialog mode currently supports llm_provider='gigachat' only.")
-    if not settings.gigachat_credentials:
-        raise RuntimeError("GIGACHAT_API_KEY is required for gigachat provider.")
-
-    from langchain_gigachat import GigaChat
-
-    return GigaChat(
-        credentials=settings.gigachat_credentials,
-        scope=settings.gigachat_scope,
-        model=settings.gigachat_model,
-        verify_ssl_certs=False,
-        timeout=settings.timeout_seconds,
-        top_p=settings.top_p,
-    )
 
 
 def _latest_user_query(messages: list[BaseMessage]) -> str:
@@ -501,12 +443,6 @@ def _message_text(message: BaseMessage) -> str:
     return str(content)
 
 
-def _structured_value(output: Any, key: str, default: Any) -> Any:
-    if isinstance(output, dict):
-        return output.get(key, default)
-    return getattr(output, key, default)
-
-
 def _evaluate_answer_quality(answer: str) -> tuple[float, float, float, float, str]:
     normalized = answer.strip()
     if not normalized:
@@ -519,18 +455,9 @@ def _evaluate_answer_quality(answer: str) -> tuple[float, float, float, float, s
             evaluator.invoke(
                 [
                     SystemMessage(
-                        content=(
-                            "Ты оцениваешь качество ответа ассистента техподдержки.\n"
-                            "Верни строго структурированный результат:\n"
-                            "- quality_score: итоговая оценка 0..1\n"
-                            "- completeness: полнота 0..1\n"
-                            "- politeness: вежливость 0..1\n"
-                            "- relevance: релевантность 0..1\n"
-                            "- notes: короткие замечания на русском языке\n"
-                            "Оцени строго по шкале 0..1."
-                        )
+                        content=ANSWER_QUALITY_EVALUATION_SYSTEM_PROMPT
                     ),
-                    HumanMessage(content=f"Оцени этот ответ:\n{normalized}"),
+                    HumanMessage(content=build_answer_quality_user_prompt(normalized)),
                 ]
             ),
         )

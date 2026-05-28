@@ -22,7 +22,7 @@ class KnowledgeBase:
         query: str,
         filters: dict[str, object] | None = None,
         top_k: int = 3,
-    ) -> list[dict[str, object]]:
+    ) -> list[Document]:
         raise NotImplementedError
 
 
@@ -66,15 +66,14 @@ class HybridChromaKnowledgeBase(KnowledgeBase):
     @classmethod
     def from_markdown_files(
         cls,
-        file_paths: list[Path],
         settings: Settings,
         collection_name: str = "from_markdown",
         chunk_size: int = 700,
         chunk_overlap: int = 80,
         chroma_batch_size: int = 4,
-    ) -> "HybridChromaKnowledgeBase":
+    ) -> HybridChromaKnowledgeBase:
         docs: list[Document] = []
-        for path in file_paths:
+        for path in Path(settings.dataset_path).glob("*.md"):
             docs.extend(build_documents_from_markdown(path))
         return cls(
             documents=docs,
@@ -141,11 +140,16 @@ class HybridChromaKnowledgeBase(KnowledgeBase):
         query: str,
         filters: dict[str, object] | None = None,
         top_k: int = 3,
-    ) -> list[dict[str, object]]:
+    ) -> list[Document]:
         """Search the knowledge base using a hybrid of BM25 and dense retrieval."""
+        search_kwargs = {"k": max(top_k, 5)}
+
+        if filters and filters.get("source") is not None:
+            search_kwargs["filter"] = {"source": {"$eq": filters["source"]}}
 
 
-        dense = self.chroma.as_retriever(search_type="similarity", search_kwargs={"k": max(top_k, 5)})
+        dense = self.chroma.as_retriever(search_type="similarity", 
+                                         search_kwargs=search_kwargs)
         # В реальной реализации можно динамически регулировать веса в зависимости от запроса или других факторов, но для простоты сейчас они фиксированные.
         # Я поставил в . env больший вес для sparse исходя из тестовых данных
         hybrid = EnsembleRetriever( 
@@ -156,15 +160,8 @@ class HybridChromaKnowledgeBase(KnowledgeBase):
         results = hybrid.invoke(query)
         filtered = apply_filters(results, filters or {})
         trimmed = filtered[:top_k]
-        return [
-            {
-                "id": str(doc.metadata.get("id", "")),
-                "title": str(doc.metadata.get("title", "")),
-                "content": str(doc.metadata.get("content", doc.page_content)),
-                "source": str(doc.metadata.get("source", "")),
-            }
-            for doc in trimmed
-        ]
+        return trimmed
+        
 
 
 def chunk_documents(
@@ -210,7 +207,7 @@ def build_documents_from_markdown(path: Path) -> list[Document]:
         docs.append(
             Document(
                 page_content=
-                        f"Answer: {entry['answer']}",
+                        f"{entry['answer']}",
                 metadata={
                     "id": entry["id"],
                     "answer": entry["answer"],
