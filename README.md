@@ -123,3 +123,8 @@ uv run python -m unittest tests/test_dataset_json.py -v
 
 ## Примеры трейсов
 
+[жалоба](https://smith.langchain.com/public/a3822615-0e2f-4553-a35c-a05a927a8695/r)
+
+
+[вопрос](https://smith.langchain.com/public/83f88059-4297-420d-aae5-913f22df6014/r)
+
