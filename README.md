@@ -122,6 +122,4 @@ uv run python -m unittest tests/test_dataset_json.py -v
 В текущем активном рантайме используется `support_agent/graph.py`.
 
 ## Примеры трейсов
-[жалоба](https://smith.langchain.com/public/e777245d-d64d-41d7-ab12-19522a86da78/r)
 
-[простой вопрос](https://smith.langchain.com/public/e777245d-d64d-41d7-ab12-19522a86da78/r)
