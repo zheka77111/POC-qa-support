@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
-from loguru import Logger
+from loguru._logger import Logger
 from support_agent.config import Settings, configure_langsmith
 from support_agent.graph import build_support_graph
 from support_agent.knowledge_base import HybridChromaKnowledgeBase

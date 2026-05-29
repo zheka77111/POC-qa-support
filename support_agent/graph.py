@@ -443,7 +443,10 @@ def escalate_complaint_with_logging(state: SupportTicketState) -> dict[str, Any]
 def finalize_response(state: SupportTicketState) -> dict[str, Any]:
     logger.info("FinalizeResponse node started for ticket={}", state.get("ticket_id"))
     try:
-        final_text = _last_final_ai_text(state.get("messages", []))
+        messages = state.get("messages", [])
+        final_text = _message_text([m for m in messages[::-1] if isinstance(m, AIMessage)][-1])
+
+        
         if not final_text and state.get("category") == "other":
             final_text = "По этой теме я не поддерживаю диалог."
         logger.info(
