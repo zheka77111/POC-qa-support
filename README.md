@@ -128,3 +128,6 @@ uv run python -m unittest tests/test_dataset_json.py -v
 
 [вопрос](https://smith.langchain.com/public/83f88059-4297-420d-aae5-913f22df6014/r)
 
+## Оценка
+
+Для оценки точности используется [скрипт](scripts/eval_is_complaint_from_log.py) для сравнения результатов логов и датасета.
