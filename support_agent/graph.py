@@ -3,14 +3,24 @@ from __future__ import annotations
 from typing import Annotated, Any, Callable, Literal, cast
 from loguru import logger
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelRequest, ModelResponse, after_model, before_agent, wrap_model_call
+from langchain.agents.middleware import ModelRequest, ModelResponse, Runtime, after_model, before_agent, wrap_model_call
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.tools import tool, ToolException
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 from langgraph.types import Command
 from support_agent.config import Settings
+from support_agent.error import (
+    ClassifyCategoryNodeError,
+    ClassifyComplaintNodeError,
+    ClassifyUrgencyNodeError,
+    EscalateComplaintNodeError,
+    FinalizeResponseNodeError,
+    GatherClassificationsNodeError,
+    KnowledgeBaseSearchToolError,
+    ReceiveRequestNodeError,
+)
 from support_agent.knowledge_base import HybridChromaKnowledgeBase
 from support_agent.logging_utils import make_error, make_event
 from support_agent.nodes.escalation import escalate_complaint
@@ -128,28 +138,30 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
         Returns:
             str: The search results.
         """
-        docs = kb.search(query=query, filters=None, top_k=settings.kb_top_k)
+        try:
+            docs = kb.search(query=query, filters=None, top_k=settings.kb_top_k)
+        except Exception as exc:
+            logger.exception("knowledge_base_search failed for query='{}'", query)
+            node_exc = KnowledgeBaseSearchToolError(str(exc))
+            raise ToolException(str(node_exc)) from node_exc
 
         parts = []
         for i, d in enumerate(docs):
             src = d.metadata.get("source") or d.metadata.get("filename") or "unknown"
             parts.append(f"\n[# Фрагмент {i} | source={src}]\n{d.page_content}")
 
-        relevant_parts: list[str] = []
-        
         logger.info(f"Knowledge base search for query: '{query}' returned {len(parts)} relevant results.")
 
         return Command(update={
-                "retrieved_docs": parts if parts else [],
+                "retrieved_docs": parts,
                 "messages": [
-            ToolMessage(content=f"База знаний вернула: {parts if parts else 'NOT_FOUND'} ", tool_call_id=tool_call_id, name="knowledge_base_search")
+            ToolMessage(content=f"База знаний вернула: {parts if parts else 'Документы не найдены'} ", tool_call_id=tool_call_id, name="knowledge_base_search")
         ],
     })
         
 
     @before_agent(state_schema=SupportTicketState)
-    def apply_priority_policy(state: SupportTicketState, runtime: Any) -> dict[str, Any] | None:
-        _ = runtime
+    def apply_priority_policy(state: SupportTicketState, runtime: Runtime) -> dict[str, Any] | None:
         logger.info(
             "DialogAgent node started for ticket={}, category={}, urgency={}",
             state.get("ticket_id"),
@@ -169,7 +181,7 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
                     "priority_instruction_applied",
                     {
                         "urgency": state.get("urgency"),
-                        
+                        "priority_instruction": state.get("priority_instruction"),
                     },
                 )
             ],
@@ -180,9 +192,14 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
                                     handler: Callable[[ModelRequest], ModelResponse],
                                         ) -> ModelResponse:
         category = request.state.get("category", "other")
+        model_retry_count = request.state.get("model_retry_count", 0)
         priority_instruction = request.state.get("priority_instruction")
         logger.info(f"Injecting dynamic system prompt for category: {category} with priority_instruction: {priority_instruction} for ticket: {request.state.get('ticket_id')}")
         dynamic_prompt = build_dynamic_category_prompt(category, priority_instruction)
+        evaluation_notes = request.state.get("evaluation_notes")    
+
+        if evaluation_notes and model_retry_count > 0:
+            dynamic_prompt += f"\n\n[FEEDBACK_RETRY] Дополнительная информация для улучшения ответа: {evaluation_notes}"
 
         if request.system_message:
             request.system_message = SystemMessage(
@@ -193,8 +210,8 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
         return handler(request)
 
     @after_model(state_schema=SupportTicketState, can_jump_to=["model"])
-    def retry_low_quality_answer(state: SupportTicketState, runtime: Any) -> dict[str, Any] | None:
-        _ = runtime
+    def retry_low_quality_answer(state: SupportTicketState, runtime: Runtime) -> dict[str, Any] | None:
+
         last_ai = _last_ai_message(state.get("messages", []))
         if last_ai is None or getattr(last_ai, "tool_calls", None):
             return None
@@ -234,7 +251,6 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
             "quality_score": score,
             "evaluation_notes": feedback,
             "model_retry_count": retries + 1,
-            "messages": [ToolMessage(content=feedback)],
             "jump_to": "model",
             "events": [
                 make_event(
@@ -263,17 +279,27 @@ def _build_dialog_agent(chat_model: Any, kb: HybridChromaKnowledgeBase, settings
 
 def receive_request(state: SupportTicketState) -> dict[str, Any]:
     logger.info("ReceiveRequest node started for ticket={}", state.get("ticket_id"))
-    user_text = state.get("user_text") or _latest_user_query(state.get("messages", []))
-    updates: dict[str, Any] = {
-        "user_text": user_text,
-        "quality_threshold": state.get("quality_threshold", 0.75),
-        "max_model_retries": state.get("max_model_retries", 1),
-        "model_retry_count": state.get("model_retry_count", 0),
-        "events": [make_event(state, "ReceiveRequest", "request_received", {"ticket_id": state.get("ticket_id")})],
-    }
-    if not state.get("messages"):
-        updates["messages"] = [HumanMessage(content=user_text)]
-    return updates
+    try:
+        user_text = state.get("user_text") or _latest_user_query(state.get("messages", []))
+        updates: dict[str, Any] = {
+            "user_text": user_text,
+            "quality_threshold": state.get("quality_threshold", 0.75),
+            "max_model_retries": state.get("max_model_retries", 1),
+            "model_retry_count": state.get("model_retry_count", 0),
+            "events": [make_event(state, "ReceiveRequest", "request_received", {"ticket_id": state.get("ticket_id")})],
+        }
+        if not state.get("messages"):
+            updates["messages"] = [HumanMessage(content=user_text)]
+        return updates
+    except Exception as exc:
+        node_exc = ReceiveRequestNodeError(str(exc))
+        logger.exception("ReceiveRequest node failed for ticket={}", state.get("ticket_id"))
+        return {
+            "has_error": True,
+            "error_node": "ReceiveRequest",
+            "errors": [make_error(state, "ReceiveRequest", type(node_exc).__name__, str(node_exc))],
+            "events": [make_event(state, "ReceiveRequest", "request_failed", {"error": str(node_exc)})],
+        }
 
 
 def classify_complaint(state: SupportTicketState) -> dict[str, Any]:
@@ -297,11 +323,12 @@ def classify_complaint(state: SupportTicketState) -> dict[str, Any]:
             ],
         }
     except Exception as exc:
+        node_exc = ClassifyComplaintNodeError(str(exc))
         logger.exception("ClassifyComplaint node failed for ticket={}", state.get("ticket_id"))
         return {
             "is_complaint": True,
-            "errors": [make_error(state, "ClassifyComplaint", type(exc).__name__, str(exc))],
-            "events": [make_event(state, "ClassifyComplaint", "classification_failed", {"error": str(exc)})],
+            "errors": [make_error(state, "ClassifyComplaint", type(node_exc).__name__, str(node_exc))],
+            "events": [make_event(state, "ClassifyComplaint", "classification_failed", {"error": str(node_exc)})],
         }
 
 
@@ -319,11 +346,12 @@ def classify_urgency(state: SupportTicketState) -> dict[str, Any]:
             "events": [make_event(state, "ClassifyUrgency", "classification_done", {"urgency": classification.urgency})],
         }
     except Exception as exc:
+        node_exc = ClassifyUrgencyNodeError(str(exc))
         logger.exception("ClassifyUrgency node failed for ticket={}", state.get("ticket_id"))
         return {
             "urgency": "medium",
-            "errors": [make_error(state, "ClassifyUrgency", type(exc).__name__, str(exc))],
-            "events": [make_event(state, "ClassifyUrgency", "classification_failed", {"error": str(exc)})],
+            "errors": [make_error(state, "ClassifyUrgency", type(node_exc).__name__, str(node_exc))],
+            "events": [make_event(state, "ClassifyUrgency", "classification_failed", {"error": str(node_exc)})],
         }
 
 
@@ -341,11 +369,12 @@ def classify_category(state: SupportTicketState) -> dict[str, Any]:
             "events": [make_event(state, "ClassifyCategory", "classification_done", {"category": classification.category})],
         }
     except Exception as exc:
+        node_exc = ClassifyCategoryNodeError(str(exc))
         logger.exception("ClassifyCategory node failed for ticket={}", state.get("ticket_id"))
         return {
             "category": "other",
-            "errors": [make_error(state, "ClassifyCategory", type(exc).__name__, str(exc))],
-            "events": [make_event(state, "ClassifyCategory", "classification_failed", {"error": str(exc)})],
+            "errors": [make_error(state, "ClassifyCategory", type(node_exc).__name__, str(node_exc))],
+            "events": [make_event(state, "ClassifyCategory", "classification_failed", {"error": str(node_exc)})],
         }
 
 
@@ -360,23 +389,33 @@ def gather_classifications(state: SupportTicketState) -> dict[str, Any]:
         state.get("category"),
         state.get("urgency"),
     )
-    return {
-        "is_complaint": state.get("is_complaint"),
-        "category": state.get("category"),
-        "urgency": state.get("urgency"),
-        "events": [
-            make_event(
-                state,
-                "GatherClassifications",
-                "gather_completed",
-                {
-                    "is_complaint": state.get("is_complaint"),
-                    "category": state.get("category"),
-                    "urgency": state.get("urgency"),
-                },
-            )
-        ],
-    }
+    try:
+        return {
+            "is_complaint": state.get("is_complaint"),
+            "category": state.get("category"),
+            "urgency": state.get("urgency"),
+            "events": [
+                make_event(
+                    state,
+                    "GatherClassifications",
+                    "gather_completed",
+                    {
+                        "is_complaint": state.get("is_complaint"),
+                        "category": state.get("category"),
+                        "urgency": state.get("urgency"),
+                    },
+                )
+            ],
+        }
+    except Exception as exc:
+        node_exc = GatherClassificationsNodeError(str(exc))
+        logger.exception("GatherClassifications node failed for ticket={}", state.get("ticket_id"))
+        return {
+            "has_error": True,
+            "error_node": "GatherClassifications",
+            "errors": [make_error(state, "GatherClassifications", type(node_exc).__name__, str(node_exc))],
+            "events": [make_event(state, "GatherClassifications", "gather_failed", {"error": str(node_exc)})],
+        }
 
 
 def escalate_complaint_with_logging(state: SupportTicketState) -> dict[str, Any]:
@@ -386,26 +425,45 @@ def escalate_complaint_with_logging(state: SupportTicketState) -> dict[str, Any]
         state.get("category"),
         state.get("urgency"),
     )
-    result = escalate_complaint(state)
-    logger.info("EscalateComplaint node completed for ticket={}", state.get("ticket_id"))
-    return result
+    try:
+        result = escalate_complaint(state)
+        logger.info("EscalateComplaint node completed for ticket={}", state.get("ticket_id"))
+        return result
+    except Exception as exc:
+        node_exc = EscalateComplaintNodeError(str(exc))
+        logger.exception("EscalateComplaint node failed for ticket={}", state.get("ticket_id"))
+        return {
+            "has_error": True,
+            "error_node": "EscalateComplaint",
+            "errors": [make_error(state, "EscalateComplaint", type(node_exc).__name__, str(node_exc))],
+            "events": [make_event(state, "EscalateComplaint", "escalation_failed", {"error": str(node_exc)})],
+        }
 
 
 def finalize_response(state: SupportTicketState) -> dict[str, Any]:
     logger.info("FinalizeResponse node started for ticket={}", state.get("ticket_id"))
-    last_ai = _last_ai_message(state.get("messages", []))
-    final_text = _message_text(last_ai) if last_ai else ""
-    logger.info(
-        "FinalizeResponse node completed for ticket={} (response_len={})",
-        state.get("ticket_id"),
-        len(final_text),
-    )
-    return {
-        "final_response": final_text,
-        "escalated": False,
-        "escalation_reason": None
-
-    }
+    try:
+        last_ai = _last_ai_message(state.get("messages", []))
+        final_text = _message_text(last_ai) if last_ai else ""
+        logger.info(
+            "FinalizeResponse node completed for ticket={} (response_len={})",
+            state.get("ticket_id"),
+            len(final_text),
+        )
+        return {
+            "final_response": final_text,
+            "escalated": False,
+            "escalation_reason": None,
+        }
+    except Exception as exc:
+        node_exc = FinalizeResponseNodeError(str(exc))
+        logger.exception("FinalizeResponse node failed for ticket={}", state.get("ticket_id"))
+        return {
+            "has_error": True,
+            "error_node": "FinalizeResponse",
+            "errors": [make_error(state, "FinalizeResponse", type(node_exc).__name__, str(node_exc))],
+            "events": [make_event(state, "FinalizeResponse", "finalization_failed", {"error": str(node_exc)})],
+        }
 
 
 def route_after_gather(state: SupportTicketState) -> Literal["complaint", "non_complaint"]:
