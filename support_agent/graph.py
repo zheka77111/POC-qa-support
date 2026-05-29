@@ -443,8 +443,9 @@ def escalate_complaint_with_logging(state: SupportTicketState) -> dict[str, Any]
 def finalize_response(state: SupportTicketState) -> dict[str, Any]:
     logger.info("FinalizeResponse node started for ticket={}", state.get("ticket_id"))
     try:
-        last_ai = _last_ai_message(state.get("messages", []))
-        final_text = _message_text(last_ai) if last_ai else ""
+        final_text = _last_final_ai_text(state.get("messages", []))
+        if not final_text and state.get("category") == "other":
+            final_text = "По этой теме я не поддерживаю диалог."
         logger.info(
             "FinalizeResponse node completed for ticket={} (response_len={})",
             state.get("ticket_id"),
@@ -482,6 +483,22 @@ def _last_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
         if isinstance(message, AIMessage):
             return message
     return None
+
+
+def _last_final_ai_text(messages: list[BaseMessage]) -> str:
+    for message in reversed(messages):
+        if not isinstance(message, AIMessage):
+            continue
+        if getattr(message, "tool_calls", None):
+            continue
+        text = _message_text(message).strip()
+        if not text:
+            continue
+        lower = text.lower()
+        if "retrieving function output" in lower:
+            continue
+        return text
+    return ""
 
 
 def _message_text(message: BaseMessage) -> str:
