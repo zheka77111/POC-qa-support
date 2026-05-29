@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
+from loguru import Logger
 from support_agent.config import Settings, configure_langsmith
 from support_agent.graph import build_support_graph
 from support_agent.knowledge_base import HybridChromaKnowledgeBase
@@ -20,6 +21,7 @@ from support_agent.test_cases import TEST_CASES_50
 def run_single(
     app: CompiledStateGraph,
     settings: Settings,
+    logger: Logger,
     ticket_id: str,
     user_text: str,
     threshold: float | None = None,
@@ -36,6 +38,7 @@ def run_single(
     }
     config = RunnableConfig(configurable={"thread_id": ticket_id})
     result = app.invoke(state, config=config)
+    logger.info(f"Final trace: {app.get_state(config=config)}")
     return {
         "ticket_id": ticket_id,
         "final_response": result.get("final_response", ""),
@@ -48,7 +51,7 @@ def run_single(
     }
 
 
-def run_batch(app: CompiledStateGraph, settings: Settings) -> dict[str, Any]:
+def run_batch(app: CompiledStateGraph, settings: Settings, logger: Logger) -> dict[str, Any]:
     total = len(TEST_CASES_50)
     exact_expected = 0
     escalated_count = 0
@@ -56,7 +59,7 @@ def run_batch(app: CompiledStateGraph, settings: Settings) -> dict[str, Any]:
 
     for case in TEST_CASES_50:
         case_data = cast(dict[str, Any], case)
-        out = run_single(app, settings, case_data["ticket_id"], case_data["user_text"])
+        out = run_single(app, settings, logger, case_data["ticket_id"], case_data["user_text"])
         expected = case_data["expected"]
         if expected == "complaint_escalation":
             ok = out["escalated"] is True
@@ -107,13 +110,14 @@ def main():
     )
 
     if args.batch:
-        summary = run_batch(app, settings)
+        summary = run_batch(app, settings, logger)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return
 
     output = run_single(
         app,
         settings,
+        logger,
         ticket_id=args.ticket_id,
         user_text=args.text,
         threshold=args.quality_threshold,
